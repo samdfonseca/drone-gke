@@ -97,6 +97,16 @@ func getAppFlags() []cli.Flag {
 			Usage:   "name of the container cluster",
 			EnvVars: []string{"PLUGIN_CLUSTER"},
 		},
+		&cli.BoolFlag{
+			Name:    "skip-fetch-credentials",
+			Usage:   "do not fetch cluster credentials",
+			EnvVars: []string{"PLUGIN_SKIP_FETCH_CREDENTIALS"},
+		},
+		&cli.StringFlag{
+			Name:    "context",
+			Usage:   "Kubernetes context to operate in",
+			EnvVars: []string{"PLUGIN_CONTEXT"},
+		},
 		&cli.StringFlag{
 			Name:    "namespace",
 			Usage:   "Kubernetes namespace to operate in",
@@ -241,20 +251,23 @@ func run(c *cli.Context) error {
 	environ = append(environ, fmt.Sprintf("GOOGLE_APPLICATION_CREDENTIALS=%s", keyPath))
 	runner := NewBasicRunner("", environ, os.Stdout, os.Stderr)
 
-	// Auth with gcloud and fetch kubectl credentials
-	if err := fetchCredentials(c, project, runner); err != nil {
-		return err
-	}
-
-	// Delete credentials from filesystem when finishing
-	// Warn if the keyfile can't be deleted, but don't abort.
-	// We're almost certainly running inside an ephemeral container, so the file will be discarded when we're finished anyway.
-	defer func() {
-		err := os.Remove(keyPath)
-		if err != nil {
-			log("Warning: error removing token file: %s\n", err)
+	skipFetchCredentials := c.Bool("skip-fetch-credentials")
+	if !skipFetchCredentials {
+		// Auth with gcloud and fetch kubectl credentials
+		if err := fetchCredentials(c, project, runner); err != nil {
+			return err
 		}
-	}()
+
+		// Delete credentials from filesystem when finishing
+		// Warn if the keyfile can't be deleted, but don't abort.
+		// We're almost certainly running inside an ephemeral container, so the file will be discarded when we're finished anyway.
+		defer func() {
+			err := os.Remove(keyPath)
+			if err != nil {
+				log("Warning: error removing token file: %s\n", err)
+			}
+		}()
+	}
 
 	// Build template data maps
 	templateData, secretsData, secretsDataRedacted, err := templateData(c, project, vars, secrets)
@@ -284,16 +297,17 @@ func run(c *cli.Context) error {
 		return fmt.Errorf("Error: %s\n", err)
 	}
 
-	// Set namespace and ensure it exists
-	if err := setNamespace(c, project, runner); err != nil {
+	if err := createNamespace(c, project, runner); err != nil {
 		return fmt.Errorf("Error: %s\n", err)
 	}
+
+	kubectlContext := getKubectlContext(c, project)
 
 	// Apply manifests
 	// Separate runner for catching secret output
 	var secretStderr bytes.Buffer
 	runnerSecret := NewBasicRunner("", environ, os.Stdout, &secretStderr)
-	if err := applyManifests(c, manifestPaths, runner, runnerSecret); err != nil {
+	if err := applyManifests(c, manifestPaths, runner, runnerSecret, kubectlContext); err != nil {
 		// Print last line of error of applying secret manifest to stderr
 		// Disable it for now as it might still leak secrets
 		// printTrimmedError(&secretStderr, os.Stderr)
@@ -604,22 +618,12 @@ func printKubectlVersion(runner Runner) error {
 	return runner.Run(kubectlCmd, "version")
 }
 
-// setNamespace sets namespace of current kubectl context and ensure it exists
-func setNamespace(c *cli.Context, project string, runner Runner) error {
-	namespace := c.String("namespace")
-	if namespace == "" {
-		return nil
+func getKubectlContext(c *cli.Context, project string) string {
+	kubectlContext := c.String("kubectl-context")
+	if kubectlContext != "" {
+		return kubectlContext
 	}
 
-	//replace invalid char in namespace
-	namespace = strings.ToLower(namespace)
-	namespace = invalidNameRegex.ReplaceAllString(namespace, "-")
-
-	// Set the execution namespace.
-	log("Configuring kubectl to the %s namespace\n", namespace)
-
-	// set cluster location segment based on parameters provided to plugin
-	// checkParams requires at least one of zone or region to be provided and prevents use of both at the same time
 	clusterLocation := ""
 	if c.String("zone") != "" {
 		clusterLocation = c.String("zone")
@@ -629,11 +633,22 @@ func setNamespace(c *cli.Context, project string, runner Runner) error {
 		clusterLocation = c.String("region")
 	}
 
-	context := strings.Join([]string{"gke", project, clusterLocation, c.String("cluster")}, "_")
+	return strings.Join([]string{"gke", project, clusterLocation, c.String("cluster")}, "_")
+}
 
-	if err := runner.Run(kubectlCmd, "config", "set-context", context, "--namespace", namespace); err != nil {
-		return fmt.Errorf("Error: %s\n", err)
+func getNamespace(c *cli.Context) string {
+	namespace := c.String("namespace")
+	if namespace == "" {
+		return ""
 	}
+
+	//replace invalid char in namespace
+	return invalidNameRegex.ReplaceAllString(strings.ToLower(namespace), "-")
+}
+
+func createNamespace(c *cli.Context, project string, runner Runner) error {
+	namespace := getNamespace(c)
+	kubectlContext := getKubectlContext(c, project)
 
 	// Write the namespace manifest to a tmp file for application.
 	resource := fmt.Sprintf(nsTemplate, namespace)
@@ -645,7 +660,7 @@ func setNamespace(c *cli.Context, project string, runner Runner) error {
 	// Ensure the namespace exists, without errors (unlike `kubectl create namespace`).
 	log("Ensuring the %s namespace exists\n", namespace)
 
-	nsArgs := applyArgs(c.Bool("dry-run"), nsPath)
+	nsArgs := applyArgs(c.Bool("dry-run"), nsPath, kubectlContext, "")
 	if err := runner.Run(kubectlCmd, nsArgs...); err != nil {
 		return fmt.Errorf("Error: %s\n", err)
 	}
@@ -654,7 +669,7 @@ func setNamespace(c *cli.Context, project string, runner Runner) error {
 }
 
 // applyManifests applies manifests using kubectl apply
-func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runner, runnerSecret Runner) error {
+func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runner, runnerSecret Runner, kubectlContext string) error {
 
 	manifests := manifestPaths[c.String("kube-template")]
 	manifestsSecret := manifestPaths[c.String("secret-template")]
@@ -663,13 +678,13 @@ func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runn
 	log("Validating Kubernetes manifests with a dry-run\n")
 
 	if !c.Bool("dry-run") {
-		args := applyArgs(true, manifests)
+		args := applyArgs(true, manifests, kubectlContext, getNamespace(c))
 		if err := runner.Run(kubectlCmd, args...); err != nil {
 			return fmt.Errorf("Error: %s\n", err)
 		}
 
 		if len(manifestsSecret) > 0 {
-			argsSecret := applyArgs(true, manifestsSecret)
+			argsSecret := applyArgs(true, manifestsSecret, kubectlContext, getNamespace(c))
 			if err := runnerSecret.Run(kubectlCmd, argsSecret...); err != nil {
 				return fmt.Errorf("Error: %s\n", err)
 			}
@@ -679,14 +694,14 @@ func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runn
 	}
 
 	// Actually apply Kubernetes manifests.
-	args := applyArgs(c.Bool("dry-run"), manifests)
+	args := applyArgs(c.Bool("dry-run"), manifests, kubectlContext, getNamespace(c))
 	if err := runner.Run(kubectlCmd, args...); err != nil {
 		return fmt.Errorf("Error: %s\n", err)
 	}
 
 	// Apply Kubernetes secrets manifests
 	if len(manifestsSecret) > 0 {
-		argsSecret := applyArgs(c.Bool("dry-run"), manifestsSecret)
+		argsSecret := applyArgs(c.Bool("dry-run"), manifestsSecret, kubectlContext, getNamespace(c))
 		if err := runnerSecret.Run(kubectlCmd, argsSecret...); err != nil {
 			return fmt.Errorf("Error: %s\n", err)
 		}
@@ -743,11 +758,15 @@ func waitForRollout(c *cli.Context, runner Runner) error {
 }
 
 // applyArgs creates args slice for kubectl apply command
-func applyArgs(dryrun bool, file string) []string {
-	args := []string{
-		"apply",
-		"--record",
+func applyArgs(dryrun bool, file, context, namespace string) []string {
+	args := []string{}
+	if context != "" {
+		args = append(args, "--context", context)
 	}
+	if namespace != "" {
+		args = append(args, "--namespace", namespace)
+	}
+	args = append(args, "apply", "--record")
 
 	if dryrun {
 		args = append(args, "--dry-run")

@@ -9,6 +9,7 @@ import (
 
 type Runner interface {
 	Run(name string, arg ...string) error
+	RunWithStdin(stdin io.Reader, name string, arg ...string) error
 }
 
 type BasicRunner struct {
@@ -33,6 +34,23 @@ func (e *BasicRunner) Run(name string, arg ...string) error {
 	cmd := exec.Command(name, arg...)
 	cmd.Dir = e.dir
 	cmd.Env = e.env
+	cmd.Stdout = e.stdout
+	cmd.Stderr = e.stderr
+
+	// TODO: Extract this
+	fmt.Println()
+	fmt.Println("$", strings.Join(cmd.Args, " "))
+	//--
+
+	return cmd.Run()
+}
+
+// RunWithStdin executes the given program reading from stdin.
+func (e *BasicRunner) RunWithStdin(stdin io.Reader, name string, arg ...string) error {
+	cmd := exec.Command(name, arg...)
+	cmd.Dir = e.dir
+	cmd.Env = e.env
+	cmd.Stdin = stdin
 	cmd.Stdout = e.stdout
 	cmd.Stderr = e.stderr
 
