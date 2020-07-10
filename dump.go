@@ -22,7 +22,7 @@ func dumpData(w io.Writer, caption string, data interface{}) {
 }
 
 func dumpFile(w io.Writer, caption, path string) {
-	fmt.Fprintf(w, "\n---START %s---\n", caption)
+	fmt.Fprintf(w, "\n---START %s %s---\n", caption, path)
 	defer fmt.Fprintf(w, "---END %s---\n", caption)
 
 	data, err := ioutil.ReadFile(path)
