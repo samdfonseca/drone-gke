@@ -265,18 +265,18 @@ func run(c *cli.Context) error {
 	// Print variables and secret keys
 	if c.Bool("verbose") {
 		dumpData(os.Stdout, "VARIABLES AVAILABLE FOR ALL TEMPLATES", templateData)
-		dumpData(os.Stdout, "ADDITIONAL SECRET VARIABLES AVAILABLE FOR .sec.yml TEMPLATES", secretsDataRedacted)
+		dumpData(os.Stdout, "ADDITIONAL SECRET VARIABLES AVAILABLE ALL TEMPLATES", secretsDataRedacted)
 	}
 
 	// Render manifest templates
-	manifestPaths, err := renderTemplates(c, templateData, secretsData)
+	manifestPaths, err := renderTemplates(c, secretsData, secretsData)
 	if err != nil {
 		return err
 	}
 
 	// Print rendered file
 	if c.Bool("verbose") {
-		dumpFile(os.Stdout, "RENDERED MANIFEST (Secret Manifest Omitted)", manifestPaths[c.String("kube-template")])
+		dumpFile(NewSecretsWriter(os.Stdout), "RENDERED MANIFEST", manifestPaths[c.String("kube-template")])
 	}
 
 	// kubectl version
@@ -293,7 +293,7 @@ func run(c *cli.Context) error {
 	// Separate runner for catching secret output
 	var secretStderr bytes.Buffer
 	runnerSecret := NewBasicRunner("", environ, os.Stdout, &secretStderr)
-	if err := applyManifests(c, manifestPaths, runner, runnerSecret); err != nil {
+	if err := applyManifests(c, manifestPaths, runnerSecret, runnerSecret); err != nil {
 		// Print last line of error of applying secret manifest to stderr
 		// Disable it for now as it might still leak secrets
 		// printTrimmedError(&secretStderr, os.Stderr)
@@ -503,7 +503,19 @@ func templateData(c *cli.Context, project string, vars map[string]interface{}, s
 		"namespace": c.String("namespace"),
 	}
 
-	secretsData := map[string]interface{}{}
+	secretsData := map[string]interface{}{
+		"BUILD_NUMBER": c.String("drone-build-number"),
+		"COMMIT":       c.String("drone-commit"),
+		"BRANCH":       c.String("drone-branch"),
+		"TAG":          c.String("drone-tag"),
+
+		// Misc useful stuff.
+		// Note that secrets (including the GCP token) are excluded
+		"project":   project,
+		"zone":      c.String("zone"),
+		"cluster":   c.String("cluster"),
+		"namespace": c.String("namespace"),
+	}
 	secretsDataRedacted := map[string]string{}
 
 	// Add variables to data used for rendering both templates.

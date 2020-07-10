@@ -194,6 +194,7 @@ run : export SECRET_BASE64_P12_CERT ?= "cDEyCg=="
 run : export docker_repo_name ?= $(docker_default_repo_name)
 run : export docker_tag ?= $(docker_default_tag)
 run : export docker_cmd ?=
+run : export PLUGIN_SKIP_SECRET_TEMPLATE ?= false
 
 # run docker container using local-example
 .PHONY : run
@@ -216,6 +217,7 @@ run :
 		--env PLUGIN_ZONE \
 		--env SECRET_APP_API_KEY \
 		--env SECRET_BASE64_P12_CERT \
+		--env PLUGIN_SKIP_SECRET_TEMPLATE \
 		--volume $(CONFIG_HOME):$(CONFIG_HOME) \
 		--workdir $(CONFIG_HOME) \
 		$(docker_repo_name)/$(docker_image_name):$(docker_tag) $(docker_cmd)
