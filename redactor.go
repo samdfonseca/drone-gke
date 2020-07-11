@@ -16,35 +16,60 @@ func NewSecretsWriter(out io.Writer) *SecretsWriter {
 	return &SecretsWriter{out: out}
 }
 
+// Write parses resource YAML bytes p, replaces the value of all data and stringData fields in Secret resources, then
+// writes the redacted resource out to the underlying io.Writer. If p is not valid YAML, an error is returned.
 func (rw *SecretsWriter) Write(p []byte) (n int, err error) {
-	for _, pp := range bytes.Split(p, []byte("---\n")) {
-		if pp == nil || len(pp) == 0 {
-			continue
-		}
-		var v map[string]interface{}
-		if err := yaml.Unmarshal(pp, &v); err != nil {
-			return n, err
-		}
+	vv, err := unmarshalMultiYaml(p)
+	if err != nil {
+		return n, err
+	}
+	for i, v := range vv {
 		if v["kind"].(string) == "Secret" {
-			data, ok := v["data"]
-			if ok {
-				data, ok := data.(map[string]interface{})
+			for _, k := range []string{"data", "stringData"} {
+				data, ok := v[k]
 				if ok {
-					for k := range data {
-						data[k] = "<REDACTED>"
+					data, ok := data.(map[string]interface{})
+					if ok {
+						for kk := range data {
+							data[kk] = "<REDACTED>"
+						}
+						vv[i][k] = data
 					}
 				}
 			}
 		}
+	}
+	b, err := marshalMultiYaml(vv)
+	if err != nil {
+		return n, err
+	}
+	return fmt.Fprint(rw.out, string(b))
+}
+
+func unmarshalMultiYaml(y []byte) ([]map[string]interface{}, error) {
+	var o []map[string]interface{}
+	for _, b := range bytes.Split(y, []byte("---\n")) {
+		if b == nil || len(b) == 0 {
+			continue
+		}
+		var v map[string]interface{}
+		if err := yaml.Unmarshal(b, &v); err != nil {
+			return nil, err
+		}
+		o = append(o, v)
+	}
+	return o, nil
+}
+
+func marshalMultiYaml(y []map[string]interface{}) ([]byte, error) {
+	var o []byte
+	for _, v := range y {
 		b, err := yaml.Marshal(v)
 		if err != nil {
-			return n, err
+			return nil, err
 		}
-		nn, err := fmt.Fprintf(rw.out, "---\n%s", b)
-		n = n + nn
-		if err != nil {
-			return n, err
-		}
+		o = append(o, "---\n"...)
+		o = append(o, b...)
 	}
-	return n, nil
+	return o, nil
 }

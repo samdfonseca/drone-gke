@@ -257,26 +257,32 @@ func run(c *cli.Context) error {
 	}()
 
 	// Build template data maps
-	templateData, secretsData, secretsDataRedacted, err := templateData(c, project, vars, secrets)
+	templateData, secretsDataRedacted, err := templateData(c, project, vars, secrets)
 	if err != nil {
 		return err
 	}
 
 	// Print variables and secret keys
 	if c.Bool("verbose") {
-		dumpData(os.Stdout, "VARIABLES AVAILABLE FOR ALL TEMPLATES", templateData)
-		dumpData(os.Stdout, "ADDITIONAL SECRET VARIABLES AVAILABLE ALL TEMPLATES", secretsDataRedacted)
+		merged := make(map[string]interface{})
+		for k, v := range templateData {
+			merged[k] = v
+		}
+		for k, v := range secretsDataRedacted {
+			merged[k] = v
+		}
+		dumpData(os.Stdout, "VARIABLES AVAILABLE FOR ALL TEMPLATES (SECRETS REDACTED)", merged)
 	}
 
 	// Render manifest templates
-	manifestPaths, err := renderTemplates(c, secretsData, secretsData)
+	manifestPaths, err := renderTemplates(c, templateData)
 	if err != nil {
 		return err
 	}
 
 	// Print rendered file
 	if c.Bool("verbose") {
-		dumpFile(NewSecretsWriter(os.Stdout), "RENDERED MANIFEST", manifestPaths[c.String("kube-template")])
+		dumpFile(NewSecretsWriter(os.Stdout), "RENDERED MANIFEST (SECRETS REDACTED)", manifestPaths[c.String("kube-template")])
 	}
 
 	// kubectl version
@@ -293,7 +299,7 @@ func run(c *cli.Context) error {
 	// Separate runner for catching secret output
 	var secretStderr bytes.Buffer
 	runnerSecret := NewBasicRunner("", environ, os.Stdout, &secretStderr)
-	if err := applyManifests(c, manifestPaths, runnerSecret, runnerSecret); err != nil {
+	if err := applyManifests(c, manifestPaths, runnerSecret); err != nil {
 		// Print last line of error of applying secret manifest to stderr
 		// Disable it for now as it might still leak secrets
 		// printTrimmedError(&secretStderr, os.Stderr)
@@ -487,7 +493,7 @@ func fetchCredentials(c *cli.Context, project string, runner Runner) error {
 }
 
 // templateData builds template and data maps
-func templateData(c *cli.Context, project string, vars map[string]interface{}, secrets map[string]string) (map[string]interface{}, map[string]interface{}, map[string]string, error) {
+func templateData(c *cli.Context, project string, vars map[string]interface{}, secrets map[string]string) (map[string]interface{}, map[string]string, error) {
 	// Built-in template vars
 	templateData := map[string]interface{}{
 		"BUILD_NUMBER": c.String("drone-build-number"),
@@ -503,27 +509,12 @@ func templateData(c *cli.Context, project string, vars map[string]interface{}, s
 		"namespace": c.String("namespace"),
 	}
 
-	secretsData := map[string]interface{}{
-		"BUILD_NUMBER": c.String("drone-build-number"),
-		"COMMIT":       c.String("drone-commit"),
-		"BRANCH":       c.String("drone-branch"),
-		"TAG":          c.String("drone-tag"),
-
-		// Misc useful stuff.
-		// Note that secrets (including the GCP token) are excluded
-		"project":   project,
-		"zone":      c.String("zone"),
-		"cluster":   c.String("cluster"),
-		"namespace": c.String("namespace"),
-	}
-	secretsDataRedacted := map[string]string{}
-
 	// Add variables to data used for rendering both templates.
 	for k, v := range vars {
 		// Don't allow vars to be overridden.
 		// We do this to ensure that the built-in template vars (above) can be relied upon.
 		if _, ok := templateData[k]; ok {
-			return nil, nil, nil, fmt.Errorf("Error: var %q shadows existing var\n", k)
+			return nil, nil, fmt.Errorf("Error: var %q shadows existing var\n", k)
 		}
 
 		if c.Bool("expand-env-vars") {
@@ -533,36 +524,30 @@ func templateData(c *cli.Context, project string, vars map[string]interface{}, s
 		}
 
 		templateData[k] = v
-		secretsData[k] = v
 	}
 
-	// Add secrets to data used for rendering the Secret template.
+	secretsDataRedacted := make(map[string]string)
+	// Add secrets to data used for rendering the templates.
 	for k, v := range secrets {
 		// Don't allow vars to be overridden.
 		// We do this to ensure that the built-in template vars (above) can be relied upon.
-		if _, ok := secretsData[k]; ok {
-			return nil, nil, nil, fmt.Errorf("Error: secret var %q shadows existing var\n", k)
+		if _, ok := templateData[k]; ok {
+			return nil, nil, fmt.Errorf("Error: secret var %q shadows existing var\n", k)
 		}
 
-		secretsData[k] = v
+		templateData[k] = v
 		secretsDataRedacted[k] = "VALUE REDACTED"
 	}
 
-	return templateData, secretsData, secretsDataRedacted, nil
+	return templateData, secretsDataRedacted, nil
 }
 
 // renderTemplates renders templates, writes into files and returns rendered template paths
-func renderTemplates(c *cli.Context, templateData map[string]interface{}, secretsData map[string]interface{}) (map[string]string, error) {
-	// mapping is a map of the template filename to the data it uses for rendering.
-	mapping := map[string]map[string]interface{}{
-		c.String("kube-template"):   templateData,
-		c.String("secret-template"): secretsData,
-	}
-
+func renderTemplates(c *cli.Context, templateData map[string]interface{}) (map[string]string, error) {
 	manifestPaths := make(map[string]string)
 
 	// YAML files path for kubectl
-	for t, content := range mapping {
+	for _, t := range []string{c.String("kube-template"), c.String("secret-template")} {
 		if t == "" {
 			continue
 		}
@@ -600,7 +585,7 @@ func renderTemplates(c *cli.Context, templateData map[string]interface{}, secret
 		}
 
 		// Generate the manifest.
-		err = tmpl.Execute(f, content)
+		err = tmpl.Execute(f, templateData)
 		if err != nil {
 			return nil, fmt.Errorf("Error rendering deployment manifest from template: %s\n", err)
 		}
@@ -666,7 +651,7 @@ func setNamespace(c *cli.Context, project string, runner Runner) error {
 }
 
 // applyManifests applies manifests using kubectl apply
-func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runner, runnerSecret Runner) error {
+func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runner) error {
 
 	manifests := manifestPaths[c.String("kube-template")]
 	manifestsSecret := manifestPaths[c.String("secret-template")]
@@ -682,7 +667,7 @@ func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runn
 
 		if len(manifestsSecret) > 0 {
 			argsSecret := applyArgs(true, manifestsSecret)
-			if err := runnerSecret.Run(kubectlCmd, argsSecret...); err != nil {
+			if err := runner.Run(kubectlCmd, argsSecret...); err != nil {
 				return fmt.Errorf("Error: %s\n", err)
 			}
 		}
@@ -699,7 +684,7 @@ func applyManifests(c *cli.Context, manifestPaths map[string]string, runner Runn
 	// Apply Kubernetes secrets manifests
 	if len(manifestsSecret) > 0 {
 		argsSecret := applyArgs(c.Bool("dry-run"), manifestsSecret)
-		if err := runnerSecret.Run(kubectlCmd, argsSecret...); err != nil {
+		if err := runner.Run(kubectlCmd, argsSecret...); err != nil {
 			return fmt.Errorf("Error: %s\n", err)
 		}
 	}

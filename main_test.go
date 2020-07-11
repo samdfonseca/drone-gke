@@ -224,7 +224,7 @@ func TestTemplateData(t *testing.T) {
 	secrets := map[string]string{"SECRET_TEST": "test_val"}
 
 	// Call
-	tmplData, secretsData, secretsDataRedacted, err := templateData(c, "test-project", vars, secrets)
+	tmplData, secretsDataRedacted, err := templateData(c, "test-project", vars, secrets)
 
 	// Verify
 	assert.Equal(t, map[string]interface{}{
@@ -238,25 +238,21 @@ func TestTemplateData(t *testing.T) {
 		"namespace":    "",
 		"key0":         "val0",
 		"key1":         "hello $USER",
+		"SECRET_TEST":  "test_val",
 	}, tmplData)
 
-	assert.Equal(t, map[string]interface{}{
-		"key0":        "val0",
-		"key1":        "hello $USER",
-		"SECRET_TEST": "test_val",
-	}, secretsData)
 	assert.Equal(t, map[string]string{"SECRET_TEST": "VALUE REDACTED"}, secretsDataRedacted)
 	assert.NoError(t, err)
 
 	// Variable overrides existing ones
 	vars = map[string]interface{}{"zone": "us-east4-b"}
-	tmplData, secretsData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
+	tmplData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
 	assert.Error(t, err)
 
 	// Secret overrides variable
 	vars = map[string]interface{}{"SECRET_TEST": "val0"}
 	secrets = map[string]string{"SECRET_TEST": "test_val"}
-	tmplData, secretsData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
+	tmplData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
 	assert.Error(t, err)
 }
 
@@ -281,7 +277,7 @@ func TestTemplateDataExpandingVars(t *testing.T) {
 	secrets := map[string]string{"SECRET_TEST": "test_val"}
 
 	// Call
-	tmplData, secretsData, secretsDataRedacted, err := templateData(c, "test-project", vars, secrets)
+	tmplData, secretsDataRedacted, err := templateData(c, "test-project", vars, secrets)
 
 	// Verify
 	assert.Equal(t, map[string]interface{}{
@@ -295,25 +291,21 @@ func TestTemplateDataExpandingVars(t *testing.T) {
 		"namespace":    "",
 		"key0":         "val0",
 		"key1":         "hello drone-user",
+		"SECRET_TEST":  "test_val",
 	}, tmplData)
 
-	assert.Equal(t, map[string]interface{}{
-		"key0":        "val0",
-		"key1":        "hello drone-user",
-		"SECRET_TEST": "test_val",
-	}, secretsData)
 	assert.Equal(t, map[string]string{"SECRET_TEST": "VALUE REDACTED"}, secretsDataRedacted)
 	assert.NoError(t, err)
 
 	// Variable overrides existing ones
 	vars = map[string]interface{}{"zone": "us-east4-b"}
-	tmplData, secretsData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
+	tmplData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
 	assert.Error(t, err)
 
 	// Secret overrides variable
 	vars = map[string]interface{}{"SECRET_TEST": "val0"}
 	secrets = map[string]string{"SECRET_TEST": "test_val"}
-	tmplData, secretsData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
+	tmplData, secretsDataRedacted, err = templateData(c, "us-east1-b", vars, secrets)
 	assert.Error(t, err)
 }
 
@@ -330,15 +322,15 @@ func TestRenderTemplates(t *testing.T) {
 	c := cli.NewContext(nil, set, nil)
 
 	tmplData := map[string]interface{}{
-		"COMMIT": "e0f21b90a",
-		"key0":   "val0",
+		"COMMIT":      "e0f21b90a",
+		"key0":        "val0",
+		"SECRET_TEST": "test_sec_val",
 	}
-	secretsData := map[string]interface{}{"SECRET_TEST": "test_sec_val"}
 
 	// No template file, should error
 	os.Remove(kubeTemplatePath)
 	os.Remove(secretTemplatePath)
-	_, err := renderTemplates(c, tmplData, secretsData)
+	_, err := renderTemplates(c, tmplData)
 	assert.Error(t, err)
 
 	// Normal
@@ -351,7 +343,7 @@ func TestRenderTemplates(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Render
-	manifestPaths, err := renderTemplates(c, tmplData, secretsData)
+	manifestPaths, err := renderTemplates(c, tmplData)
 	assert.NoError(t, err)
 
 	// Verify token files
@@ -361,11 +353,13 @@ func TestRenderTemplates(t *testing.T) {
 	buf, err = ioutil.ReadFile(manifestPaths[secretTemplatePath])
 	assert.Equal(t, "test_sec_val", string(buf))
 
-	// Secret variables shouldn't be available in kube template
+	// Secret variables should be available in kube template
 	tmplBuf = []byte("{{.SECRET_TEST}}")
 	err = ioutil.WriteFile(kubeTemplatePath, tmplBuf, 0600)
-	_, err = renderTemplates(c, tmplData, secretsData)
-	assert.Error(t, err)
+	manifestPaths, err = renderTemplates(c, tmplData)
+	buf, err = ioutil.ReadFile(manifestPaths[kubeTemplatePath])
+	assert.Equal(t, "test_sec_val", string(buf))
+	assert.NoError(t, err)
 }
 
 func TestParseSkips(t *testing.T) {
@@ -489,7 +483,7 @@ func TestApplyManifests(t *testing.T) {
 	testRunner.On("Run", []string{"kubectl", "apply", "--record", "--dry-run", "--filename", "/path/to/secret-tamplate"}).Return(nil)
 	testRunner.On("Run", []string{"kubectl", "apply", "--record", "--filename", "/path/to/kube-tamplate"}).Return(nil)
 	testRunner.On("Run", []string{"kubectl", "apply", "--record", "--filename", "/path/to/secret-tamplate"}).Return(nil)
-	err := applyManifests(c, manifestPaths, testRunner, testRunner)
+	err := applyManifests(c, manifestPaths, testRunner)
 	testRunner.AssertExpectations(t)
 	assert.NoError(t, err)
 
@@ -501,7 +495,7 @@ func TestApplyManifests(t *testing.T) {
 	testRunner = new(MockedRunner)
 	testRunner.On("Run", []string{"kubectl", "apply", "--record", "--dry-run", "--filename", "/path/to/kube-tamplate"}).Return(nil)
 	testRunner.On("Run", []string{"kubectl", "apply", "--record", "--filename", "/path/to/kube-tamplate"}).Return(nil)
-	err = applyManifests(c, manifestPaths, testRunner, testRunner)
+	err = applyManifests(c, manifestPaths, testRunner)
 	testRunner.AssertExpectations(t)
 	assert.NoError(t, err)
 
@@ -520,7 +514,7 @@ func TestApplyManifests(t *testing.T) {
 	testRunner = new(MockedRunner)
 	testRunner.On("Run", []string{"kubectl", "apply", "--record", "--dry-run", "--filename", "/path/to/kube-tamplate"}).Return(nil)
 	testRunner.On("Run", []string{"kubectl", "apply", "--record", "--dry-run", "--filename", "/path/to/secret-tamplate"}).Return(nil)
-	err = applyManifests(c, manifestPaths, testRunner, testRunner)
+	err = applyManifests(c, manifestPaths, testRunner)
 	testRunner.AssertExpectations(t)
 	assert.NoError(t, err)
 }

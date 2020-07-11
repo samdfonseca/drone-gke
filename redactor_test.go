@@ -2,77 +2,64 @@ package main
 
 import (
 	"bytes"
-	"fmt"
+	"io/ioutil"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-const testYaml = `---
-apiVersion: networking.k8s.io/v1beta1
-kind: Ingress
-metadata:
-  annotations:
-    git_commit: '{{.git_commit}}'
-    kubernetes.io/ingress.allow-http: "false"
-    kubernetes.io/ingress.global-static-ip-name: '{{.ingress_static_ip_name}}'
-    networking.gke.io/managed-certificates: '{{.ssl_cert_name}}'
-  labels:
-    app: '{{.app}}'
-  name: '{{.app}}'
-  namespace: '{{.namespace}}'
-spec:
-  backend:
-    serviceName: '{{.app}}'
-    servicePort: svc-https
----
-apiVersion: v1
-data:
-  POSTGRESQL_PW: 'SECRET_POSTGRESQL_PW'
-  POSTGRESQL_USER: 'SECRET_POSTGRESQL_USER'
-kind: Secret
-metadata:
-  annotations:
-    git_commit: '{{.git_commit}}'
-  labels:
-    app: '{{.app}}'
-  name: postgresql-credentials
-  namespace: '{{.namespace}}'
-type: Opaque
----
-apiVersion: v1
-data:
-  svc_account.json: 'SECRET_GOOGLE_APPLICATION_CREDENTIALS'
-kind: Secret
-metadata:
-  annotations:
-    git_commit: '{{.git_commit}}'
-  labels:
-    app: '{{.app}}'
-  name: gcp-service-account-keys
-  namespace: '{{.namespace}}'
-type: Opaque`
+type writeTestCase struct {
+	name string
+	in   []byte
+	out  []byte
+}
 
-var (
-	testSecretsData = map[string]string{
-		"svc_account.json": "'SECRET_GOOGLE_APPLICATION_CREDENTIALS'",
-		"POSTGRESQL_PW":    "'SECRET_POSTGRESQL_PW'",
-		"POSTGRESQL_USER":  "'SECRET_POSTGRESQL_USER'",
+// setupSecretsWriterWriteTestCases tries to create a test case for each file in `test-data/redactor/in/` with a `.yaml`
+// extension. For every file it finds, a file with the same name in `test-data/redactor/out/` is required, otherwise an
+// error is returned. The file in the `out` directory should be the redacted version of the file in the `in` directory.
+// Test cases are named after the base filename, minus the `.yaml` extension.
+func setupSecretsWriterWriteTestCases() ([]writeTestCase, error) {
+	inFiles, err := filepath.Glob(`./test-data/redactor/in/*.yaml`)
+	if err != nil {
+		return nil, err
 	}
-)
+	var tests []writeTestCase
+	for _, inFile := range inFiles {
+		in, err := ioutil.ReadFile(inFile)
+		if err != nil {
+			return nil, err
+		}
+		outFile := filepath.Join("./test-data/redactor/out", filepath.Base(inFile))
+		outRaw, err := ioutil.ReadFile(outFile)
+		if err != nil {
+			return nil, err
+		}
+		// Unmarshal then marshal the contents of the out file since `yaml.Marshal` reorders keys, and unindents lists.
+		// Without this, the output is not guaranteed to be textually equivalent.
+		outTmp, err := unmarshalMultiYaml(outRaw)
+		if err != nil {
+			return nil, err
+		}
+		out, err := marshalMultiYaml(outTmp)
+		name := strings.TrimSuffix(filepath.Base(inFile), ".yaml")
+		tests = append(tests, writeTestCase{name: name, in: in, out: out})
+	}
+	return tests, nil
+}
 
-func TestRedactedWriter_Write(t *testing.T) {
-	buf := new(bytes.Buffer)
-	redactedWriter := NewSecretsWriter(buf)
-	if _, err := redactedWriter.Write([]byte(testYaml)); err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
-	for k, v := range testSecretsData {
-		if strings.Contains(out, v) {
-			t.Fatalf("found secret in output: %s", v)
-		}
-		if !strings.Contains(out, fmt.Sprintf("%s: <REDACTED>", k)) {
-			t.Fatalf("did not find redacted secret in output: %s", k)
-		}
+func TestSecretsWriter_Write(t *testing.T) {
+	tests, err := setupSecretsWriterWriteTestCases()
+	assert.NoError(t, err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			buf := new(bytes.Buffer)
+			redactedWriter := NewSecretsWriter(buf)
+			_, err := redactedWriter.Write(test.in)
+			assert.NoError(t, err)
+			out := buf.Bytes()
+			assert.Equal(t, test.out, out)
+		})
 	}
 }
