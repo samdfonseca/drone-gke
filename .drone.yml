@@ -23,8 +23,6 @@ steps:
       CGO_ENABLED: 0
       GOPROXY: https://proxy.golang.org
     when:
-      branch:
-        - master
       event:
         - push
 
@@ -51,8 +49,6 @@ steps:
       TOKEN:
         from_secret: google_credentials_dev
     when:
-      branch:
-        - master
       event:
         - push
 
