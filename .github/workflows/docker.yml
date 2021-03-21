@@ -27,4 +27,3 @@ jobs:
           push: true
           tags: |
             ghcr.io/samdfonseca/droke-gke:latest
-            ghcr.io/samdfonseca/droke-gke:$GITHUB_SHA
