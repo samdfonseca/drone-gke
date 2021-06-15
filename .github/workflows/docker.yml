@@ -31,4 +31,4 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: nyt-aiqdata-dev/tarplat-dsr-api/drone-gke:$GITHUB_SHA
+          tags: nyt-aiqdata-dev/tarplat-dsr-api/drone-gke:${{ github.sha }}
