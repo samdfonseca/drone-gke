@@ -19,17 +19,16 @@ jobs:
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v1
-      - name: Login to GitHub Container Registry
+      - name: Login to Artifact Registry
         uses: docker/login-action@v1
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.CR_PAT }}
-      - name: Push to GitHub Packages
-        uses: docker/build-push-action@v2.3.0
+          registry: us-central1-docker.pkg.dev
+          username: _json_key_base64
+          password: ${{ secrets.ARTIFACT_REGISTRY_CREDENTIALS }}
+      - name: Push to Artifact Registry
+        uses: docker/build-push-action@v2.5.0
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/samdfonseca/droke-gke:latest
+          tags: nyt-aiqdata-dev/tarplat-dsr-api/drone-gke:${{ env.GITHUB_SHA }}
